@@ -981,6 +981,11 @@ out_free_data:
 #else
 
 // Stub functions for kernels < 5.10
+#include <linux/version.h>
+#include <linux/errno.h>
+#include <linux/printk.h>
+#include <linux/types.h>
+
 struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
 {
     (void)old_pol;
