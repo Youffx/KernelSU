@@ -10,6 +10,7 @@
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/fs.h>
+#include <linux/version.h>
 #include <asm-generic/errno-base.h>
 #include <net/genetlink.h>
 #include <linux/moduleparam.h>
@@ -28,6 +29,20 @@
 #include "ksu.h"
 #include "policy/feature.h"
 #include "hook/lsm_hook.h"
+
+/*
+ * selinux_hide relies on selinux_state fields (status_lock, status_page,
+ * policy) and SELinux internals that changed significantly between 4.19
+ * and 5.x+. Disable the entire feature on older kernels.
+ * Upgrade path: backport the required selinux_state fields to 4.19.
+ */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+void __init ksu_selinux_hide_init(void) {}
+void __exit ksu_selinux_hide_exit(void) {}
+void ksu_selinux_hide_drop_backup_if_unused(void) {}
+void ksu_selinux_hide_handle_second_stage(void) {}
+void ksu_selinux_hide_handle_post_fs_data(void) {}
+#else
 
 static DEFINE_MUTEX(selinux_hide_mutex);
 static bool ksu_selinux_hide_enabled __read_mostly = false;
@@ -1132,4 +1147,5 @@ allow:
     avd->allowed = 0xffffffff;
     goto out;
 }
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0) */
 #endif

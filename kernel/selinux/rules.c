@@ -15,6 +15,23 @@
 #include "linux/lsm_audit.h" // IWYU pragma: keep
 #include "xfrm.h"
 
+// Kernel 4.19 doesn't have selinux_state.policy or selinux_state.policy_mutex
+// These were added in later kernels. Disable SELinux policy manipulation for older kernels.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+void apply_kernelsu_rules(void)
+{
+    pr_info("SELinux policy manipulation not supported on this kernel version\n");
+}
+
+int handle_sepolicy(void __user *user_data, u64 data_len)
+{
+    (void)user_data;
+    (void)data_len;
+    pr_info("SELinux policy manipulation not supported on this kernel version\n");
+    return -ENOTSUPP;
+}
+#else
+
 struct selinux_policy *backup_sepolicy;
 
 #define SELINUX_POLICY_INSTEAD_SELINUX_SS
@@ -531,3 +548,4 @@ out_free:
 
     return ret;
 }
+#endif
