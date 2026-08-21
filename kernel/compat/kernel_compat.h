@@ -62,7 +62,8 @@ static inline void ksu_kvfree(const void *buf)
 #define ksu_access_ok(addr, size) access_ok(VERIFY_READ, addr, size)
 #endif
 
-#ifndef KSU_OPTIONAL_STRNCPY
+// strncpy_from_user_nofault: kernel has it natively since ~4.14
+#if !defined(KSU_OPTIONAL_STRNCPY) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
 extern long strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr,
 				   long count);
 #endif
