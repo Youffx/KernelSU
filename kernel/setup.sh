@@ -47,7 +47,11 @@ setup_kernelsu() {
     fi
     git pull && echo "[+] Repository updated."
     if [ -z "${1-}" ]; then
-        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
+        if git describe --abbrev=0 --tags >/dev/null 2>&1; then
+            git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
+        else
+            git checkout main && echo "[-] No tags found, checked out main branch."
+        fi
     else
         git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
     fi
