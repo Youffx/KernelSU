@@ -983,6 +983,7 @@ out_free_data:
 // Stub functions for kernels < 5.10
 #include <linux/version.h>
 #include <linux/errno.h>
+#include <linux/err.h>
 #include <linux/printk.h>
 #include <linux/types.h>
 
