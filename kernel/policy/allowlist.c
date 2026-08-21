@@ -8,6 +8,7 @@
 #include <linux/compiler.h>
 #include <linux/fs.h>
 #include <linux/gfp.h>
+#include "compat/kernel_compat.h"
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/printk.h>
@@ -474,11 +475,7 @@ void ksu_persistent_allow_list()
         goto put_task;
     }
     cb->func = do_persistent_allow_list;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
     if (task_work_add(tsk, cb, TWA_RESUME)) {
-#else
-    if (task_work_add(tsk, cb, true)) {
-#endif
         kfree(cb);
         pr_warn("save_allow_list add task_work failed\n");
     }

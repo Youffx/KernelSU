@@ -20,11 +20,7 @@
 #include "ksu.h"
 #include "infra/su_mount_ns.h"
 #include "util.h"
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
-                      void *data_page);
-#endif
+#include "compat/kernel_compat.h"
 
 #if defined(__aarch64__)
 extern long __arm64_sys_setns(const struct pt_regs *regs);
@@ -150,13 +146,7 @@ static void ksu_mnt_ns_individual(void)
     // make root mount private
     struct path root_path;
     get_fs_root(current->fs, &root_path);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
     int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);
-#else
-    // path_mount doesn't exist in 4.19; do_mount requires user-space path pointer.
-    // Mount namespace isolation not supported on this kernel version.
-    int pm_ret = -ENOTSUPP;
-#endif
     path_put(&root_path);
 
     if (pm_ret < 0) {
