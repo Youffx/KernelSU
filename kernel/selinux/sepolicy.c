@@ -1,5 +1,6 @@
 // Kernel 4.19 and older don't have compatible SELinux internal APIs.
 // Disable sepolicy manipulation for kernels < 5.10.
+#include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 
 #include "ss/avtab.h"
@@ -11,7 +12,6 @@
 #include <linux/gfp.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
-#include <linux/version.h>
 #include <linux/vmalloc.h>
 
 #include "sepolicy.h"
