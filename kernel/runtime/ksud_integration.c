@@ -20,6 +20,18 @@
 #include <linux/uio.h>
 #include <linux/stat.h>
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+static inline long copy_from_user_nofault(void *to, const void __user *from, unsigned long n)
+{
+	return _copy_from_user(to, from, n);
+}
+
+static inline long copy_to_user_nofault(void __user *to, const void *from, unsigned long n)
+{
+	return _copy_to_user(to, from, n);
+}
+#endif
+
 #include "arch.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
