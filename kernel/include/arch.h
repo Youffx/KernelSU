@@ -17,7 +17,11 @@
 #define __PT_RC_REG regs[0]
 #define __PT_SP_REG sp
 #define __PT_IP_REG pc
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 #define __PT_ORIG_SYSCALL_REG regs[8]
+#else
+#define __PT_ORIG_SYSCALL_REG orig_x0
+#endif
 
 #define REBOOT_SYMBOL "__arm64_sys_reboot"
 #define SYS_READ_SYMBOL "__arm64_sys_read"
