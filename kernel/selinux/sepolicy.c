@@ -1,3 +1,7 @@
+// Kernel 4.19 and older don't have compatible SELinux internal APIs.
+// Disable sepolicy manipulation for kernels < 5.10.
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+
 #include "ss/avtab.h"
 #include "ss/constraint.h"
 #include "ss/ebitmap.h"
@@ -973,3 +977,117 @@ out_free_data:
 
     return ERR_PTR(ret);
 }
+
+#else
+
+// Stub functions for kernels < 5.10
+struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+{
+    (void)old_pol;
+    pr_info("SELinux policy manipulation not supported on this kernel version\n");
+    return ERR_PTR(-ENOTSUPP);
+}
+
+void ksu_destroy_sepolicy(struct selinux_policy *orig)
+{
+    (void)orig;
+    pr_info("SELinux policy manipulation not supported on this kernel version\n");
+}
+
+// Operation on types
+bool ksu_type(struct policydb *db, const char *name, const char *attr)
+{
+    (void)db; (void)name; (void)attr;
+    return false;
+}
+bool ksu_attribute(struct policydb *db, const char *name)
+{
+    (void)db; (void)name;
+    return false;
+}
+bool ksu_permissive(struct policydb *db, const char *type)
+{
+    (void)db; (void)type;
+    return false;
+}
+bool ksu_enforce(struct policydb *db, const char *type)
+{
+    (void)db; (void)type;
+    return false;
+}
+bool ksu_typeattribute(struct policydb *db, const char *type, const char *attr)
+{
+    (void)db; (void)type; (void)attr;
+    return false;
+}
+bool ksu_exists(struct policydb *db, const char *type)
+{
+    (void)db; (void)type;
+    return false;
+}
+
+// Access vector rules
+bool ksu_allow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
+    return false;
+}
+bool ksu_deny(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
+    return false;
+}
+bool ksu_auditallow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
+    return false;
+}
+bool ksu_dontaudit(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
+    return false;
+}
+
+// Extended permissions access vector rules
+bool ksu_allowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
+    return false;
+}
+bool ksu_auditallowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
+    return false;
+}
+bool ksu_dontauditxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
+    return false;
+}
+
+// Type rules
+bool ksu_type_transition(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def,
+                         const char *obj)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)def; (void)obj;
+    return false;
+}
+bool ksu_type_change(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)def;
+    return false;
+}
+bool ksu_type_member(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def)
+{
+    (void)db; (void)src; (void)tgt; (void)cls; (void)def;
+    return false;
+}
+
+// File system labeling
+bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, const char *ctx)
+{
+    (void)db; (void)fs_name; (void)path; (void)ctx;
+    return false;
+}
+
+#endif
