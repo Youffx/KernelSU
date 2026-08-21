@@ -21,8 +21,12 @@
 #include "infra/su_mount_ns.h"
 #include "util.h"
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
                       void *data_page);
+#else
+extern long do_mount(const char *, const char __user *, const char *, unsigned long, void *);
+#endif
 
 #if defined(__aarch64__)
 extern long __arm64_sys_setns(const struct pt_regs *regs);
@@ -148,7 +152,11 @@ static void ksu_mnt_ns_individual(void)
     // make root mount private
     struct path root_path;
     get_fs_root(current->fs, &root_path);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
     int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);
+#else
+    int pm_ret = do_mount(NULL, root_path.dentry->d_name.name, NULL, MS_PRIVATE | MS_REC, NULL);
+#endif
     path_put(&root_path);
 
     if (pm_ret < 0) {
