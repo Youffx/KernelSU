@@ -21,6 +21,11 @@
 
 #define ALL NULL
 
+extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
+extern void selnl_notify_policyload(u32 seqno);
+extern void selinux_status_update_policyload(struct selinux_state *state, u32 seqno);
+extern void selinux_xfrm_notify_policyload(void);
+
 static void reset_avc_cache(void)
 {
     avc_ss_reset(selinux_state.avc, 0);
