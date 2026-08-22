@@ -12,6 +12,7 @@
 #include <linux/version.h>
 #include <linux/input-event-codes.h>
 #include <linux/printk.h>
+#include <linux/sched/signal.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/namei.h>
