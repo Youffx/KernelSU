@@ -822,7 +822,7 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
     struct flex_array *new_sym;
 
     // Grow type_attr_map_array: flex_array of struct ebitmap (values, not pointers)
-    new_type_attr_map = flex_array_alloc(sizeof(struct ebitmap), 0, GFP_KERNEL);
+    new_type_attr_map = flex_array_alloc(sizeof(struct ebitmap), value, GFP_KERNEL);
     if (!new_type_attr_map)
         goto fail;
     if (flex_array_prealloc(new_type_attr_map, 0, value, GFP_KERNEL))
@@ -839,7 +839,7 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
     }
 
     // Grow type_val_to_struct_array: flex_array of struct type_datum * (pointers)
-    new_type_val = flex_array_alloc(sizeof(struct type_datum *), 0, GFP_KERNEL);
+    new_type_val = flex_array_alloc(sizeof(struct type_datum *), value, GFP_KERNEL);
     if (!new_type_val)
         goto fail_attr;
     if (flex_array_prealloc(new_type_val, 0, value, GFP_KERNEL))
@@ -851,7 +851,7 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
     flex_array_put_ptr(new_type_val, value - 1, type, GFP_KERNEL);
 
     // Grow sym_val_to_name[SYM_TYPES]: flex_array of char * (pointers)
-    new_sym = flex_array_alloc(sizeof(char *), 0, GFP_KERNEL);
+    new_sym = flex_array_alloc(sizeof(char *), value, GFP_KERNEL);
     if (!new_sym)
         goto fail_val;
     if (flex_array_prealloc(new_sym, 0, value, GFP_KERNEL))
