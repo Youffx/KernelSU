@@ -75,4 +75,14 @@ extern long strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr,
 #endif
 #endif
 
+// copy_to_kernel_nofault added in 5.10; on older kernels use probe_kernel_write
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+#include <linux/uaccess.h>
+static inline long ksu_copy_to_kernel_nofault(void *dst, const void *src, size_t size)
+{
+	return probe_kernel_write(dst, src, size);
+}
+#define copy_to_kernel_nofault ksu_copy_to_kernel_nofault
+#endif
+
 #endif // #ifndef __KSU_H_KERNEL_COMPAT

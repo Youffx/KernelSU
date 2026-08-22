@@ -1,7 +1,8 @@
-// Kernel 4.19 and older don't have compatible SELinux internal APIs.
-// Disable sepolicy manipulation for kernels < 5.10.
+// Low-level policydb manipulation functions work on all kernel versions
+// (they operate on struct policydb *). Version-specific parts:
+// - ksu_dup_sepolicy/ksu_destroy_sepolicy: only for >= 5.10 (need struct selinux_policy *)
+// - add_filename_trans: different struct names/APIs between < 5.9 and >= 5.9
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 
 #include "ss/avtab.h"
 #include "ss/constraint.h"
@@ -546,8 +547,6 @@ static bool add_filename_trans(struct policydb *db, const char *s, const char *t
 {
     struct type_datum *src, *tgt, *def;
     struct class_datum *cls;
-    struct filename_trans_key *new_key = NULL;
-    int rc;
 
     src = symtab_search(&db->p_types, s);
     if (src == NULL) {
@@ -570,63 +569,102 @@ static bool add_filename_trans(struct policydb *db, const char *s, const char *t
         return false;
     }
 
-    struct filename_trans_key key;
-    key.ttype = tgt->value;
-    key.tclass = cls->value;
-    key.name = (char *)o;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+    // 5.9+: filename_trans_key uses ttype/tclass/name, source type in datum bitmap
+    {
+        struct filename_trans_key key;
+        struct filename_trans_datum *last = NULL;
+        struct filename_trans_datum *trans;
+        struct filename_trans_key *new_key = NULL;
+        int rc;
 
-    struct filename_trans_datum *last = NULL;
+        key.ttype = tgt->value;
+        key.tclass = cls->value;
+        key.name = (char *)o;
 
-    struct filename_trans_datum *trans = policydb_filenametr_search(db, &key);
-    while (trans) {
-        if (ebitmap_get_bit(&trans->stypes, src->value - 1)) {
-            // Duplicate, overwrite existing data and return
+        trans = policydb_filenametr_search(db, &key);
+        while (trans) {
+            if (ebitmap_get_bit(&trans->stypes, src->value - 1)) {
+                trans->otype = def->value;
+                return true;
+            }
+            if (trans->otype == def->value)
+                break;
+            last = trans;
+            trans = trans->next;
+        }
+
+        if (trans == NULL) {
+            trans = (struct filename_trans_datum *)kcalloc(1, sizeof(*trans), GFP_KERNEL);
+            if (!trans) {
+                pr_err("add_filename_trans: alloc datum failed\n");
+                return false;
+            }
+            new_key = (struct filename_trans_key *)kzalloc(sizeof(*new_key), GFP_KERNEL);
+            if (!new_key) {
+                kfree(trans);
+                return false;
+            }
+            *new_key = key;
+            new_key->name = kstrdup(key.name, GFP_KERNEL);
+            if (!new_key->name) {
+                kfree(new_key);
+                kfree(trans);
+                return false;
+            }
+            trans->next = last;
             trans->otype = def->value;
+            rc = hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params);
+            if (rc) {
+                pr_err("add_filename_trans: hashtab_insert failed: %d\n", rc);
+                kfree(new_key->name);
+                kfree(new_key);
+                kfree(trans);
+                return false;
+            }
+        }
+
+        db->compat_filename_trans_count++;
+        return ebitmap_set_bit(&trans->stypes, src->value - 1, 1) == 0;
+    }
+#else
+    // < 5.9: filename_trans has stype/ttype/tclass/name, simple datum with otype
+    {
+        struct filename_trans ft;
+        struct filename_trans_datum *otype;
+        struct filename_trans *new_ft;
+
+        ft.stype = src->value;
+        ft.ttype = tgt->value;
+        ft.tclass = cls->value;
+        ft.name = o;
+
+        otype = hashtab_search(db->filename_trans, &ft);
+        if (otype) {
+            otype->otype = def->value;
             return true;
         }
-        if (trans->otype == def->value)
-            break;
-        last = trans;
-        trans = trans->next;
+
+        otype = (struct filename_trans_datum *)kzalloc(sizeof(*otype), GFP_KERNEL);
+        if (!otype)
+            return false;
+        otype->otype = def->value;
+
+        new_ft = kmemdup(&ft, sizeof(ft), GFP_KERNEL);
+        if (!new_ft) {
+            kfree(otype);
+            return false;
+        }
+
+        if (hashtab_insert(db->filename_trans, new_ft, otype)) {
+            pr_err("add_filename_trans: hashtab_insert failed\n");
+            kfree(otype);
+            kfree(new_ft);
+            return false;
+        }
+        return true;
     }
-
-    if (trans == NULL) {
-        trans = (struct filename_trans_datum *)kcalloc(1, sizeof(*trans), GFP_KERNEL);
-        if (!trans) {
-            pr_err("add_filename_trans: alloc filename_trans_datum failed\n");
-            goto out;
-        }
-        new_key = (struct filename_trans_key *)kzalloc(sizeof(*new_key), GFP_KERNEL);
-        if (!new_key) {
-            pr_err("add_filename_trans: alloc filename_trans_key failed\n");
-            goto free_trans;
-        }
-        *new_key = key;
-        new_key->name = kstrdup(key.name, GFP_KERNEL);
-        if (!new_key->name) {
-            pr_err("add_filename_trans: kstrdup name failed\n");
-            goto free_key;
-        }
-        trans->next = last;
-        trans->otype = def->value;
-        rc = hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params);
-        if (rc) {
-            pr_err("add_filename_trans: hashtab_insert failed: %d\n", rc);
-            goto free_name;
-        }
-    }
-
-    db->compat_filename_trans_count++;
-    return ebitmap_set_bit(&trans->stypes, src->value - 1, 1) == 0;
-
-free_name:
-    kfree(new_key->name);
-free_key:
-    kfree(new_key);
-free_trans:
-    kfree(trans);
-out:
-    return false;
+#endif
 }
 
 static bool add_genfscon(struct policydb *db, const char *fs_name, const char *path, const char *context)
@@ -897,6 +935,8 @@ bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, co
 }
 
 // ======== sepolicy ========
+// ksu_dup_sepolicy/ksu_destroy_sepolicy require struct selinux_policy * (>= 5.10 only)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 
 void ksu_destroy_sepolicy(struct selinux_policy *pol)
 {
@@ -978,122 +1018,4 @@ out_free_data:
     return ERR_PTR(ret);
 }
 
-#else
-
-// Stub functions for kernels < 5.10
-#include <linux/version.h>
-#include <linux/errno.h>
-#include <linux/err.h>
-#include <linux/printk.h>
-#include <linux/types.h>
-
-struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
-{
-    (void)old_pol;
-    pr_info("SELinux policy manipulation not supported on this kernel version\n");
-    return ERR_PTR(-ENOTSUPP);
-}
-
-void ksu_destroy_sepolicy(struct selinux_policy *orig)
-{
-    (void)orig;
-    pr_info("SELinux policy manipulation not supported on this kernel version\n");
-}
-
-// Operation on types
-bool ksu_type(struct policydb *db, const char *name, const char *attr)
-{
-    (void)db; (void)name; (void)attr;
-    return false;
-}
-bool ksu_attribute(struct policydb *db, const char *name)
-{
-    (void)db; (void)name;
-    return false;
-}
-bool ksu_permissive(struct policydb *db, const char *type)
-{
-    (void)db; (void)type;
-    return false;
-}
-bool ksu_enforce(struct policydb *db, const char *type)
-{
-    (void)db; (void)type;
-    return false;
-}
-bool ksu_typeattribute(struct policydb *db, const char *type, const char *attr)
-{
-    (void)db; (void)type; (void)attr;
-    return false;
-}
-bool ksu_exists(struct policydb *db, const char *type)
-{
-    (void)db; (void)type;
-    return false;
-}
-
-// Access vector rules
-bool ksu_allow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
-    return false;
-}
-bool ksu_deny(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
-    return false;
-}
-bool ksu_auditallow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
-    return false;
-}
-bool ksu_dontaudit(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)perm;
-    return false;
-}
-
-// Extended permissions access vector rules
-bool ksu_allowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
-    return false;
-}
-bool ksu_auditallowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
-    return false;
-}
-bool ksu_dontauditxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)range;
-    return false;
-}
-
-// Type rules
-bool ksu_type_transition(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def,
-                         const char *obj)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)def; (void)obj;
-    return false;
-}
-bool ksu_type_change(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)def;
-    return false;
-}
-bool ksu_type_member(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def)
-{
-    (void)db; (void)src; (void)tgt; (void)cls; (void)def;
-    return false;
-}
-
-// File system labeling
-bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, const char *ctx)
-{
-    (void)db; (void)fs_name; (void)path; (void)ctx;
-    return false;
-}
-
-#endif
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) */
