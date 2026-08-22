@@ -425,7 +425,7 @@ static bool is_init_rc(struct file *fp)
         return false;
     }
 
-    if (strcmp(dpath, "/system/etc/init/hw/init.rc")) {
+    if (strcmp(dpath, "/system/etc/init/hw/init.rc") && strcmp(dpath, "/init.rc")) {
         return false;
     }
 
@@ -571,56 +571,79 @@ void ksu_execveat_hook_ksud(const struct pt_regs *regs)
     ksu_execve_hook_ksud_common(filename_user, argv_user);
 }
 
-static long (*orig_sys_read)(const struct pt_regs *regs);
-static long ksu_sys_read(const struct pt_regs *regs)
+static int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
-    unsigned int fd = PT_REGS_PARM1(regs);
-    char __user **buf_ptr = (char __user **)&PT_REGS_PARM2(regs);
-    size_t *count_ptr = (size_t *)&PT_REGS_PARM3(regs);
-
-    ksu_handle_sys_read(fd, buf_ptr, count_ptr);
-    return orig_sys_read(regs);
+	unsigned int fd = (unsigned int)PT_REGS_PARM1(regs);
+	ksu_handle_sys_read(fd, NULL, NULL);
+	return 0;
 }
 
-static long (*orig_sys_fstat)(const struct pt_regs *regs);
-static long ksu_sys_fstat(const struct pt_regs *regs)
+static struct kprobe sys_read_kp = {
+	.symbol_name = "__arm64_sys_read",
+	.pre_handler = sys_read_handler_pre,
+};
+
+static int sys_fstat_entry_handler(struct kretprobe_instance *p, struct pt_regs *regs)
 {
-    unsigned int fd = PT_REGS_PARM1(regs);
-    void __user *statbuf = (void __user *)PT_REGS_PARM2(regs);
-    bool is_rc = false;
-    long ret;
+	unsigned int fd = (unsigned int)PT_REGS_PARM1(regs);
+	void *statbuf = (void *)PT_REGS_PARM2(regs);
+	struct file *file;
+	bool is_rc = false;
 
-    struct file *file = fget(fd);
-    if (file) {
-        if (is_init_rc(file)) {
-            pr_info("stat init.rc");
-            is_rc = true;
-            load_module_rc_once();
-        }
-        fput(file);
-    }
+	file = fget(fd);
+	if (file) {
+		if (is_init_rc(file)) {
+			is_rc = true;
+			load_module_rc_once();
+		}
+		fput(file);
+	}
 
-    ret = orig_sys_fstat(regs);
+	if (!is_rc)
+		return 1; // skip post_handler
 
-    if (is_rc) {
-        void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
-        long size, new_size;
-        size_t extra = ksu_rc_len + module_rc_len;
-        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
-            new_size = size + extra;
-            pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
-            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
-                pr_info("added rc len");
-            } else {
-                pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
-            }
-        } else {
-            pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
-        }
-    }
-
-    return ret;
+	*(void **)&p->data = statbuf;
+	return 0;
 }
+
+static int sys_fstat_post_handler(struct kretprobe_instance *p, struct pt_regs *regs)
+{
+	void __user *statbuf = *(void **)&p->data;
+	void __user *st_size_ptr;
+	long size, new_size;
+	size_t extra = ksu_rc_len + module_rc_len;
+
+	if (!statbuf)
+		return 0;
+
+	st_size_ptr = statbuf + offsetof(struct stat, st_size);
+
+	pagefault_disable();
+
+	if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
+		new_size = size + extra;
+		pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
+		if (!copy_to_user(st_size_ptr, &new_size, sizeof(long))) {
+			pr_info("added rc len");
+		} else {
+			pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
+		}
+	} else {
+		pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
+	}
+
+	pagefault_enable();
+
+	return 0;
+}
+
+static struct kretprobe sys_fstat_kp = {
+	.kp.symbol_name = "__arm64_sys_fstat",
+	.entry_handler = sys_fstat_entry_handler,
+	.handler = sys_fstat_post_handler,
+	.data_size = sizeof(void *),
+	.maxactive = 20,
+};
 
 static int input_handle_event_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -640,11 +663,18 @@ static void do_stop_input_hook(struct work_struct *work)
     unregister_kprobe(&input_event_kp);
 }
 
+static struct work_struct stop_init_rc_hook_work;
+
+static void do_stop_init_rc_hook(struct work_struct *work)
+{
+	unregister_kprobe(&sys_read_kp);
+	unregister_kretprobe(&sys_fstat_kp);
+	pr_info("unregistered init_rc kprobes\n");
+}
+
 static void stop_init_rc_hook()
 {
-    ksu_syscall_table_unhook(__NR_read);
-    ksu_syscall_table_unhook(__NR_fstat);
-    pr_info("unregister init_rc syscall hook\n");
+	schedule_work(&stop_init_rc_hook_work);
 }
 
 void ksu_stop_input_hook_runtime(void)
@@ -663,20 +693,23 @@ void __init ksu_ksud_init()
 {
     int ret;
 
-    ksu_syscall_table_hook(__NR_read, ksu_sys_read, &orig_sys_read);
-    ksu_syscall_table_hook(__NR_fstat, ksu_sys_fstat, &orig_sys_fstat);
+    ret = register_kprobe(&sys_read_kp);
+    pr_info("ksud: sys_read_kp: %d\n", ret);
+
+    ret = register_kretprobe(&sys_fstat_kp);
+    pr_info("ksud: sys_fstat_kp: %d\n", ret);
 
     ret = register_kprobe(&input_event_kp);
     pr_info("ksud: input_event_kp: %d\n", ret);
 
+    INIT_WORK(&stop_init_rc_hook_work, do_stop_init_rc_hook);
     INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
 }
 
 void __exit ksu_ksud_exit()
 {
-    // TODO:
-    // this should be done before unregister vfs_read_kp
-    // stop_init_rc_hook();
+    unregister_kprobe(&sys_read_kp);
+    unregister_kretprobe(&sys_fstat_kp);
     unregister_kprobe(&input_event_kp);
 
     if (module_rc_buf) {
