@@ -3,7 +3,6 @@
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/kprobes.h>
 #include <linux/pid.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
@@ -78,53 +77,39 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
     kfree(tw);
 }
 
-static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
+// Manual hook: called from kernel/reboot.c SYSCALL_DEFINE4(reboot, ...)
+// Returns 1 if the reboot was intercepted (KSU magic), 0 otherwise
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user *arg)
 {
-    struct pt_regs *real_regs = PT_REAL_REGS(regs);
-    int magic1 = (int)PT_REGS_PARM1(real_regs);
-    int magic2 = (int)PT_REGS_PARM2(real_regs);
-
     if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {
         struct ksu_install_fd_tw *tw;
-        unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
 
         tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
         if (!tw)
-            return 0;
+            return 1; // consume the call even on alloc failure
 
-        tw->outp = (int __user *)arg4;
+        tw->outp = (int __user *)arg;
         tw->cb.func = ksu_install_fd_tw_func;
 
         if (task_work_add(current, &tw->cb, TWA_RESUME)) {
             kfree(tw);
             pr_warn("install fd add task_work failed\n");
         }
+
+        return 1; // intercepted
     }
 
-    return 0;
+    return 0; // not intercepted, proceed with normal reboot
 }
-
-static struct kprobe reboot_kp = {
-    .symbol_name = REBOOT_SYMBOL,
-    .pre_handler = reboot_handler_pre,
-};
+EXPORT_SYMBOL_GPL(ksu_handle_sys_reboot);
 
 void __init ksu_supercalls_init(void)
 {
-    int rc;
-
     ksu_supercall_dump_commands();
-
-    rc = register_kprobe(&reboot_kp);
-    if (rc) {
-        pr_err("reboot kprobe failed: %d\n", rc);
-    } else {
-        pr_info("reboot kprobe registered successfully\n");
-    }
+    pr_info("ksu: manual hooks mode, reboot hook via kernel source\n");
 }
 
 void __exit ksu_supercalls_exit(void)
 {
-    unregister_kprobe(&reboot_kp);
     ksu_supercall_cleanup_state();
 }
