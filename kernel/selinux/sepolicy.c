@@ -151,6 +151,9 @@ static bool is_redundant_avtab_node(struct avtab_node *node)
     return node->datum.u.data == 0U;
 }
 
+// On < 5.10, avtab.htable is struct flex_array *, so direct access doesn't work.
+// Redundant node cleanup is non-critical — just leave the zero-data node.
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 {
     int i;
@@ -194,6 +197,12 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
     avtab_destroy(&removed);
     return false;
 }
+#else
+static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
+{
+    return false;
+}
+#endif
 
 static bool add_rule(struct policydb *db, const char *s, const char *t, const char *c, const char *p, int effect,
                      bool invert)
@@ -697,6 +706,9 @@ void *ksu_kvrealloc_compat(const void *p, size_t oldsize, size_t newsize, gfp_t 
 #define ksu_kvrealloc(p, new_size, old_size) ksu_kvrealloc_compat(p, old_size, new_size, GFP_KERNEL)
 #endif
 
+// >= 5.10: type_val_to_struct, type_attr_map_array, sym_val_to_name are flat arrays (krealloc-able)
+// < 5.10:  they are flex_array * (must alloc new, copy, swap, free old)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 static bool add_type(struct policydb *db, const char *type_name, bool attr)
 {
     struct type_datum *type = symtab_search(&db->p_types, type_name);
@@ -719,11 +731,14 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
     char *key = kstrdup(type_name, GFP_KERNEL);
     if (!key) {
         pr_err("add_type: alloc key failed.\n");
+        kfree(type);
         return false;
     }
 
     if (symtab_insert(&db->p_types, key, type)) {
         pr_err("add_type: insert symtab failed.\n");
+        kfree(key);
+        kfree(type);
         return false;
     }
 
@@ -767,6 +782,112 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
 
     return true;
 }
+#else
+static bool add_type(struct policydb *db, const char *type_name, bool attr)
+{
+    struct type_datum *type = symtab_search(&db->p_types, type_name);
+    if (type) {
+        pr_warn("Type %s already exists\n", type_name);
+        return true;
+    }
+
+    u32 value = ++db->p_types.nprim;
+    type = (struct type_datum *)kzalloc(sizeof(struct type_datum), GFP_KERNEL);
+    if (!type) {
+        pr_err("add_type: alloc type_datum failed.\n");
+        return false;
+    }
+
+    type->primary = 1;
+    type->value = value;
+    type->attribute = attr;
+
+    char *key = kstrdup(type_name, GFP_KERNEL);
+    if (!key) {
+        pr_err("add_type: alloc key failed.\n");
+        kfree(type);
+        return false;
+    }
+
+    if (symtab_insert(&db->p_types, key, type)) {
+        pr_err("add_type: insert symtab failed.\n");
+        kfree(key);
+        kfree(type);
+        return false;
+    }
+
+    u32 i;
+    struct flex_array *new_type_attr_map;
+    struct flex_array *new_type_val;
+    struct flex_array *new_sym;
+
+    // Grow type_attr_map_array: flex_array of struct ebitmap (values, not pointers)
+    new_type_attr_map = flex_array_alloc(sizeof(struct ebitmap), 0, GFP_KERNEL);
+    if (!new_type_attr_map)
+        goto fail;
+    if (flex_array_prealloc(new_type_attr_map, 0, value, GFP_KERNEL))
+        goto fail;
+    for (i = 0; i < value - 1; i++) {
+        struct ebitmap *src = flex_array_get(db->type_attr_map_array, i);
+        struct ebitmap *dst = flex_array_get(new_type_attr_map, i);
+        memcpy(dst, src, sizeof(struct ebitmap));
+    }
+    {
+        struct ebitmap *new_eb = flex_array_get(new_type_attr_map, value - 1);
+        ebitmap_init(new_eb);
+        ebitmap_set_bit(new_eb, value - 1, 1);
+    }
+
+    // Grow type_val_to_struct_array: flex_array of struct type_datum * (pointers)
+    new_type_val = flex_array_alloc(sizeof(struct type_datum *), 0, GFP_KERNEL);
+    if (!new_type_val)
+        goto fail_attr;
+    if (flex_array_prealloc(new_type_val, 0, value, GFP_KERNEL))
+        goto fail_attr;
+    for (i = 0; i < value - 1; i++) {
+        struct type_datum *src = flex_array_get_ptr(db->type_val_to_struct_array, i);
+        flex_array_put_ptr(new_type_val, i, src, GFP_KERNEL);
+    }
+    flex_array_put_ptr(new_type_val, value - 1, type, GFP_KERNEL);
+
+    // Grow sym_val_to_name[SYM_TYPES]: flex_array of char * (pointers)
+    new_sym = flex_array_alloc(sizeof(char *), 0, GFP_KERNEL);
+    if (!new_sym)
+        goto fail_val;
+    if (flex_array_prealloc(new_sym, 0, value, GFP_KERNEL))
+        goto fail_val;
+    for (i = 0; i < value - 1; i++) {
+        char *src = flex_array_get_ptr(db->sym_val_to_name[SYM_TYPES], i);
+        flex_array_put_ptr(new_sym, i, src, GFP_KERNEL);
+    }
+    flex_array_put_ptr(new_sym, value - 1, key, GFP_KERNEL);
+
+    // Swap and free old
+    flex_array_free(db->type_attr_map_array);
+    db->type_attr_map_array = new_type_attr_map;
+
+    flex_array_free(db->type_val_to_struct_array);
+    db->type_val_to_struct_array = new_type_val;
+
+    flex_array_free(db->sym_val_to_name[SYM_TYPES]);
+    db->sym_val_to_name[SYM_TYPES] = new_sym;
+
+    for (i = 0; i < db->p_roles.nprim; ++i) {
+        ebitmap_set_bit(&db->role_val_to_struct[i]->types, value - 1, 1);
+    }
+
+    return true;
+
+fail_val:
+    flex_array_free(new_type_val);
+fail_attr:
+    flex_array_free(new_type_attr_map);
+fail:
+    kfree(key);
+    kfree(type);
+    return false;
+}
+#endif
 
 static bool set_type_state(struct policydb *db, const char *type_name, bool permissive)
 {
@@ -795,7 +916,11 @@ static bool set_type_state(struct policydb *db, const char *type_name, bool perm
 
 static void add_typeattribute_raw(struct policydb *db, struct type_datum *type, struct type_datum *attr)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
     struct ebitmap *sattr = &db->type_attr_map_array[type->value - 1];
+#else
+    struct ebitmap *sattr = (struct ebitmap *)flex_array_get(db->type_attr_map_array, type->value - 1);
+#endif
     ebitmap_set_bit(sattr, attr->value - 1, 1);
 
     struct hashtab_node *node;
