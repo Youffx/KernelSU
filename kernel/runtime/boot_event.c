@@ -64,8 +64,8 @@ void on_module_mounted(void)
 
 void on_boot_completed(void)
 {
-    ksu_boot_completed = true;
-    pr_info("on_boot_completed!\n");
-    track_throne(true);
-    ksu_selinux_hide_drop_backup_if_unused();
+	ksu_boot_completed = true;
+	pr_info("on_boot_completed!\n");
+	track_throne(false);
+	ksu_selinux_hide_drop_backup_if_unused();
 }
