@@ -451,7 +451,7 @@ static void ksu_install_rc_hook(struct file *file)
     file->f_op = &fops_proxy;
 }
 
-static void ksu_handle_sys_read(unsigned int fd)
+void ksu_handle_sys_read(unsigned int fd)
 {
     struct file *file = fget(fd);
     if (!file) {
